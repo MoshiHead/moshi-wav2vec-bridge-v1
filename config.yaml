@@ -1,0 +1,129 @@
+# ============================================================
+# Mimi-to-Wav2Vec2 Bridge Module — Full Configuration
+# Teacher: facebook/wav2vec2-base-960h  (768-dim, 25 Hz target)
+# Tuned for: 4× RTX 4090 (24 GB each) on RunPod
+#            25,686 train / 2,853 val samples
+# Launch with:
+#   torchrun --nproc_per_node=4 train.py --config config.yaml
+# ============================================================
+
+model:
+  # --- Embedding ---
+  num_codebooks: 8
+  vocab_size: 2048
+  embed_dim: 256              # per-codebook embedding dim
+  embed_fusion: "sum"         # "sum" | "concat"
+
+  # --- Temporal Upsampling ---
+  # Mimi outputs at 12.5 Hz; wav2vec2 features are extracted at ~50 Hz
+  # then down-interpolated to 25 Hz to match the bridge output rate.
+  # upsample_factor = 25 / 12.5 = 2  (bridge upsamples tokens ×2 → 25 Hz).
+  upsample_factor: 2
+  upsample_kernel: 2
+
+  # --- Transformer ---
+  d_model: 512
+  nhead: 8
+  num_layers: 4
+  dim_feedforward: 2048
+  dropout: 0.1
+  causal: true
+  pos_encoding: "relative"
+  max_seq_len: 2048
+
+  # --- Output ---
+  output_dim: 768             # facebook/wav2vec2-base-960h hidden size
+
+training:
+  # ── Per-GPU batch size ────────────────────────────────────────────────────
+  # 4 GPUs × 32 per-GPU × 1 accum = 128 effective batch (fits in 24 GB VRAM)
+  # If you hit OOM, drop to batch_size: 16 or raise accum_steps to 2.
+  batch_size: 32
+
+  # ── Gradient accumulation ─────────────────────────────────────────────────
+  # effective_batch = batch_size × world_size × accum_steps
+  # 32 × 4 × 1 = 128  (good default)
+  # Set to 2 if you want 256-sample effective batch without more VRAM.
+  accum_steps: 1
+
+  num_epochs: 50
+
+  # Scaled learning rate: base_lr × sqrt(effective_batch / 16)
+  # base = 1e-4 → 1e-4 × sqrt(128/16) ≈ 2.83e-4
+  learning_rate: 2.8e-4
+  weight_decay: 1.0e-5
+  lr_scheduler: "cosine"
+  # warmup_steps counts optimizer steps (after accumulation)
+  # 25686 samples / (32×4) = ~201 steps/epoch → 5 epochs warmup ≈ 1000 steps
+  warmup_steps: 1000
+  grad_clip: 1.0
+  mixed_precision: true       # BF16 on RTX 4090
+  seed: 42
+
+  # ── torch.compile ─────────────────────────────────────────────────────────
+  # Disabled: model returns (tensor, None) which crashes AOT Autograd, and
+  # variable-length padded batches cause constant stride mismatches that
+  # exhaust the recompile cache immediately. DDP+AMP already gives full GPU use.
+  compile: false
+
+  # --- Loss Weights ---
+  loss_weights:
+    recon:      1.0
+    ctc:        0.3
+    prosody:    0.2
+    adv:        0.1
+    stat:       0.1
+    smooth:     0.05
+    # alignment requires forced-alignment phone labels in the manifest.
+    # Set to 0.0 when training on LibriSpeech (no phone_labels in manifest).
+    # Enable only when manifest entries contain "phone_labels" arrays.
+    alignment:  0.0
+
+  # --- Discriminator ---
+  disc_lr: 2.0e-4
+  disc_start_step: 5000
+  disc_hidden: 512
+  disc_layers: 4
+
+  # --- CTC / ASR head ---
+  ctc_vocab_size: 31
+  freeze_ctc_head: true
+
+  # --- Prosody ---
+  f0_min: 50.0
+  f0_max: 600.0
+  hop_length: 160
+
+data:
+  sample_rate: 16000
+  mimi_sample_rate: 24000     # Mimi requires 24kHz input audio
+  # Mimi encoder output frame rate (Hz).
+  mimi_rate: 12.5
+
+  # facebook/wav2vec2-base-960h CNN feature extractor stride = 320 samples.
+  # At 16 kHz → native rate ≈ 50 Hz.  We down-interpolate to 25 Hz so that:
+  #   bridge output rate = mimi_rate × upsample_factor = 12.5 × 2 = 25 Hz ✓
+  # Formula used: num_f = ceil(len_samples_16k / 16000 * 25)
+  wav2vec2_feat_rate: 25.0    # GT target rate after down-interpolation (Hz)
+  wav2vec2_native_rate: 50.0  # native wav2vec2 CNN output rate (Hz)
+  max_audio_seconds: 20.0
+  train_manifest: "data/train.jsonl"
+  val_manifest: "data/val.jsonl"
+  # ── DataLoader workers ────────────────────────────────────────────────────
+  # 4 workers per GPU × 4 GPUs = 16 total workers.
+  # trainer.py caps and scales this automatically — set your max here.
+  num_workers: 4
+  cache_features: true
+  cache_dir: "data/cache"
+
+paths:
+  wav2vec2_model: "facebook/wav2vec2-base-960h"  # HuggingFace model ID or local path
+  mimi_model: "kyutai/moshiko-pytorch-bf16"
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  tensorboard: true
+
+inference:
+  chunk_size: 50
+  kv_cache: true
+  device: "cuda"

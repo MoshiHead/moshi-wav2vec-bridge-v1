@@ -1,0 +1,19 @@
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# transformers>=4.40.0 required for:
+#   - MimiModel  (kyutai/moshiko-pytorch-bf16) — Mimi token extraction
+#   - Wav2Vec2Model + Wav2Vec2FeatureExtractor  — teacher feature extraction
+#     Model: facebook/wav2vec2-base-960h  (768-dim, ~50 Hz native → 25 Hz target)
+transformers>=4.40.0
+
+pyyaml>=6.0
+numpy>=1.24.0
+librosa>=0.10.0
+pyworld>=0.3.4
+tensorboard>=2.14.0
+safetensors
+huggingface_hub
+
+# moshi (official Kyutai package) — optional but recommended for Mimi extraction
+# pip install moshi
